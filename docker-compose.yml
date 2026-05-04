@@ -2,9 +2,8 @@ version: '3.8'
 
 services:
   grig-monitor:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # Pulls the image you just built and published via GitHub Actions
+    image: ghcr.io/colchetedao/gitsum:latest
     container_name: grig-monitor
     ports:
       - "3000:3000"
