@@ -1,7 +1,9 @@
 # ---------------------------------------------------
 # Stage 1: Cargo Chef Planner
 # ---------------------------------------------------
-FROM rust:1.75-slim-bookworm AS chef
+# UPDATED: Using floating slim-bookworm tag to ensure 
+# the latest Rust compiler is used for cargo-chef compatibility.
+FROM rust:slim-bookworm AS chef
 USER root
 RUN cargo install cargo-chef
 WORKDIR /app
