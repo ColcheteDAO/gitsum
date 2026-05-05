@@ -1,29 +1,28 @@
 use serde::Deserialize;
-use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub server: ServerConfig,
-    pub repositories: Vec<RepositoryConfig>,
+    pub projects: Vec<ProjectConfig>, // Renamed from repositories
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ServerConfig {
     pub port: u16,
-    pub refresh_interval: u64, // in seconds
+    pub refresh_interval: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct RepositoryConfig {
+pub struct ProjectConfig {
     pub name: String,
-    pub path: String,
-    pub branch: String, // e.g., "main"
+    pub branch: String,
     pub remotes: Vec<RemoteConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RemoteConfig {
     pub name: String,
+    pub url: String, // Added URL to the config
     pub ssh_key: String,
 }
 

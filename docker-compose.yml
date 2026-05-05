@@ -1,27 +1,16 @@
 version: '3.8'
 
 services:
-  grig-monitor:
-    # Pulls the image you just built and published via GitHub Actions
+  gitsum:
     image: ghcr.io/colchetedao/gitsum:latest
-    container_name: grig-monitor
+    container_name: gitsum
     ports:
       - "3000:3000"
     volumes:
-      # 1. Mount the configuration file (Read-Only)
       - ./config.toml:/app/config.toml:ro
-      
-      # 2. Mount your local repositories directory (Read-Only)
-      # UPDATE THIS to the path where your local code lives on your host machine
-      - /home/user/code:/mnt/repos:ro
-      
-      # 3. Mount your SSH keys so git2 can authenticate with the remotes (Read-Only)
-      # UPDATE THIS if your SSH keys are stored elsewhere
-      - /home/user/.ssh:/etc/grig/keys:ro
+      - ~/.ssh/gitsum/keys:/etc/gitsum/keys:ro
     
     environment:
-      # Tells the config crate where to look if it isn't in the default root
       - GRIG_SERVER__PORT=3000
     
-    # Ensures the monitor comes back up if the host machine reboots
     restart: unless-stopped
