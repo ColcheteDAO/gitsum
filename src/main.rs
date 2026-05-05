@@ -1,3 +1,23 @@
+mod config;
+mod git_ops;
+
+use axum::{extract::State, routing::get, Json, Router};
+use chrono::{DateTime, Utc};
+use config::AppConfig;
+use serde::Serialize;
+use std::{collections::HashMap, sync::Arc};
+use tokio::{net::TcpListener, sync::RwLock};
+use tracing::{error, info};
+
+// --- Models ---
+
+#[derive(Clone)]
+struct AppState {
+    config: Arc<AppConfig>,
+    // Key: project_name -> Value: ProjectStatus
+    statuses: Arc<RwLock<HashMap<String, ProjectStatus>>>,
+}
+
 #[derive(Clone, Serialize)]
 struct ProjectStatus {
     project_name: String,
@@ -9,9 +29,53 @@ struct ProjectStatus {
 struct RemoteStatus {
     remote_name: String,
     hash: Option<String>,
-    last_checked: chrono::DateTime<chrono::Utc>,
+    last_checked: DateTime<Utc>,
     error_msg: Option<String>,
 }
+
+#[derive(Serialize)]
+struct DashboardResponse {
+    global_sync: bool,
+    projects: Vec<ProjectStatus>,
+}
+
+// --- Main ---
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    info!("Starting Stateless GRIG (Git Remote Integrity Guard)...");
+
+    let app_config = Arc::new(AppConfig::load().expect("Failed to load config.toml"));
+    let statuses = Arc::new(RwLock::new(HashMap::new()));
+
+    let state = AppState {
+        config: app_config.clone(),
+        statuses: statuses.clone(),
+    };
+
+    // Spawn the background polling task
+    let state_for_worker = state.clone();
+    tokio::spawn(async move {
+        run_background_poller(state_for_worker).await;
+    });
+
+    // Setup Axum Router
+    let app = Router::new()
+        .route("/api/v1/status", get(status_handler))
+        .with_state(state);
+
+    let addr = format!("0.0.0.0:{}", app_config.server.port);
+    let listener = TcpListener::bind(&addr).await?;
+    
+    info!("Server listening on {}", addr);
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+// --- Background Worker ---
 
 async fn run_background_poller(state: AppState) {
     let interval_secs = state.config.server.refresh_interval;
@@ -43,7 +107,7 @@ async fn run_background_poller(state: AppState) {
                 let mut r_status = RemoteStatus {
                     remote_name: remote.name.clone(),
                     hash: None,
-                    last_checked: chrono::Utc::now(),
+                    last_checked: Utc::now(),
                     error_msg: None,
                 };
 
@@ -66,10 +130,26 @@ async fn run_background_poller(state: AppState) {
             // Integrity Check: If all remotes returned a hash, and there is exactly 1 unique hash, they match!
             current_project_status.is_synced = !has_errors && unique_hashes.len() == 1;
 
-            // Update the shared state (assuming you refactor state to store ProjectStatus instead of RemoteStatus)
+            // Update the shared state
             state.statuses.write().await.insert(project.name.clone(), current_project_status);
         }
         
+        info!("Sweep complete. Sleeping for {} seconds.", interval_secs);
         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
     }
+}
+
+// --- API Handler ---
+
+async fn status_handler(State(state): State<AppState>) -> Json<DashboardResponse> {
+    let lock = state.statuses.read().await;
+    let projects: Vec<ProjectStatus> = lock.values().cloned().collect();
+    
+    // Global sync is true if EVERY project is synced
+    let global_sync = projects.iter().all(|p| p.is_synced);
+
+    Json(DashboardResponse {
+        global_sync,
+        projects,
+    })
 }
