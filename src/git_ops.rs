@@ -16,8 +16,8 @@ pub fn fetch_remote_hash(
     remote_config: &RemoteConfig,
 ) -> Result<String, GitCheckError> {
     
-    // 1. Create a detached remote (No local repo required!)
-    let mut remote = Remote::create_detached(&remote_config.url)?;
+    // 1. Create a detached remote using .as_str() to satisfy the byte conversion
+    let mut remote = Remote::create_detached(remote_config.url.as_str())?;
 
     // 2. Setup SSH Callbacks
     let mut callbacks = RemoteCallbacks::new();
