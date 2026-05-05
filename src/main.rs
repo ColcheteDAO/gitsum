@@ -1,7 +1,7 @@
 mod config;
 mod git_ops;
 
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{extract::State, response::Html, routing::get, Json, Router};
 use chrono::{DateTime, Utc};
 use config::AppConfig;
 use serde::Serialize;
@@ -63,6 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup Axum Router
     let app = Router::new()
+        .route("/", get(root_handler))
         .route("/api/v1/status", get(status_handler))
         .with_state(state);
 
@@ -139,7 +140,12 @@ async fn run_background_poller(state: AppState) {
     }
 }
 
-// --- API Handler ---
+// --- API Handlers ---
+
+async fn root_handler() -> Html<&'static str> {
+    // This macro embeds the HTML file into your compiled binary
+    Html(include_str!("index.html"))
+}
 
 async fn status_handler(State(state): State<AppState>) -> Json<DashboardResponse> {
     let lock = state.statuses.read().await;
