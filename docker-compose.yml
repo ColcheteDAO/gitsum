@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   gitsum:
+    pull_policy: always
     image: ghcr.io/colchetedao/gitsum:latest
     container_name: gitsum
     ports:
