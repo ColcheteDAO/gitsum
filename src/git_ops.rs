@@ -16,14 +16,16 @@ pub fn fetch_remote_hash(
     remote_config: &RemoteConfig,
 ) -> Result<String, GitCheckError> {
     
-    // 1. Create a detached remote (No local repo required!)
+    // 1. Create a detached remote
     let mut remote = Remote::create_detached(remote_config.url.as_str())?;
 
     // 2. Setup SSH Callbacks
     let mut callbacks = RemoteCallbacks::new();
     let ssh_key_path = remote_config.ssh_key.clone();
     
-    // Tell libgit2 to trust the remote host certificate (Bypass strict host checking)
+    // Create the path to the public key (e.g., id_ed25519.pub)
+    let pub_key_path = format!("{}.pub", ssh_key_path);
+    
     callbacks.certificate_check(|_cert, _valid| {
         Ok(CertificateCheckStatus::CertificateOk)
     });
@@ -31,7 +33,7 @@ pub fn fetch_remote_hash(
     callbacks.credentials(move |_url, username_from_url, _allowed_types| {
         Cred::ssh_key(
             username_from_url.unwrap_or("git"),
-            None,
+            Some(Path::new(&pub_key_path)), // <-- Explicitly pass the public key here
             Path::new(&ssh_key_path),
             None,
         )
