@@ -1,5 +1,5 @@
 use crate::config::RemoteConfig;
-use git2::{Cred, Remote, RemoteCallbacks};
+use git2::{CertificateCheckStatus, Cred, Remote, RemoteCallbacks};
 use std::path::Path;
 use thiserror::Error;
 
@@ -25,7 +25,7 @@ pub fn fetch_remote_hash(
     
     // Tell libgit2 to trust the remote host certificate (Bypass strict host checking)
     callbacks.certificate_check(|_cert, _valid| {
-        true 
+        Ok(CertificateCheckStatus::CertificateOk)
     });
 
     callbacks.credentials(move |_url, username_from_url, _allowed_types| {
