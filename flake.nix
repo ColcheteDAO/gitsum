@@ -60,6 +60,7 @@
             rust-analyzer
             rustfmt
             clippy
+            jq
           ];
 
           shellHook = ''
