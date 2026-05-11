@@ -3,11 +3,11 @@
 set -euo pipefail
 
 # --- Load Environment Variables ---
-# If a .env file exists in the current directory, source it safely
 if [ -f ".env" ]; then
   echo "Loading variables from .env file..."
-  # Export variables from .env, ignoring comments and empty lines
-  export $(grep -v '^#' .env | xargs)
+  set -a
+  source .env
+  set +a
 fi
 
 # --- Configuration ---
@@ -15,13 +15,23 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
 if [ -z "$GITHUB_TOKEN" ]; then
   echo "ERROR: Please set your GITHUB_TOKEN environment variable or add it to a .env file."
-  echo "Example .env content: GITHUB_TOKEN=ghp_your_actual_token_here"
   exit 1
 fi
 
 SERVER_PORT=3000
 REFRESH_INTERVAL=60
 OUTPUT_FILE="config.toml"
+
+# --- Parse Extra Remotes via Templates ---
+EXTRA_REMOTES="${EXTRA_REMOTES:-}"
+EXTRA_REMOTES_JSON="[]"
+
+if [ -n "$EXTRA_REMOTES" ]; then
+  EXTRA_REMOTES_JSON=$(echo "$EXTRA_REMOTES" | tr ' ' '\n' | jq -R -s -c '
+    split("\n") | map(select(length > 0)) | map(split(",")) | map({"name": .[0], "url_template": .[1]})
+  ')
+  echo "Detected extra remotes. Appending them to each project..."
+fi
 
 echo "Initializing $OUTPUT_FILE..."
 cat <<EOF > "$OUTPUT_FILE"
@@ -32,13 +42,11 @@ refresh_interval = $REFRESH_INTERVAL
 EOF
 
 # --- Helper Function ---
-# Fetches paginated API endpoints and uses jq to format directly to TOML
 append_repos() {
   local base_url="$1"
   local page=1
 
   while true; do
-    # Handle URL parameter appending
     local url="${base_url}"
     if [[ "$url" == *"?"* ]]; then
       url="${url}&per_page=100&page=${page}"
@@ -47,29 +55,32 @@ append_repos() {
     fi
 
     local body
-    # Fetch the page; exit the loop gracefully if the API call fails
     if ! body=$(curl -sS -f -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json" "$url"); then
         echo "⚠️  Failed to fetch $url (Check permissions). Skipping..."
         break
     fi
     
-    # If the returned JSON array is empty, we've reached the end of the pages
     local count
     count=$(echo "$body" | jq 'length')
     if [ "$count" -eq 0 ]; then
       break
     fi
 
-    # Use jq to map the JSON array directly into the TOML string format
-    echo "$body" | jq -r '
+    # Use jq to create ONE [[projects]] block, and loop remotes inside it.
+    echo "$body" | jq -r --argjson extras "$EXTRA_REMOTES_JSON" '
       .[] | 
+      . as $repo |
       "[[projects]]\n" +
-      "name = \"\(.name)\"\n" +
-      "branch = \"\(if .default_branch != null then .default_branch else "main" end)\"\n\n" +
-      "  [[projects.remotes]]\n" +
-      "  name = \"github\"\n" +
-      "  url = \"git@github.com:\(.full_name).git\"\n" +
-      "  ssh_key = \"/etc/gitsum/keys/github\"\n"
+      "name = \"\($repo.name)\"\n" +
+      "branch = \"\(if $repo.default_branch != null then $repo.default_branch else "main" end)\"\n" +
+      (
+        ( [{"name": "github", "url_template": "git@github.com:{full_name}.git" }] + $extras ) | map(
+          "\n  [[projects.remotes]]\n" +
+          "  name = \"\(.name)\"\n" +
+          "  url = \"\(.url_template | gsub("\\{full_name\\}"; $repo.full_name) | gsub("\\{owner\\}"; $repo.owner.login) | gsub("\\{name\\}"; $repo.name))\"\n" +
+          "  ssh_key = \"/etc/gitsum/keys/\(.name)\"\n"
+        ) | join("")
+      ) + "\n"
     ' >> "$OUTPUT_FILE"
 
     page=$((page + 1))
@@ -83,8 +94,6 @@ append_repos "https://api.github.com/user/repos?type=owner"
 
 echo "Fetching organizations..."
 if orgs=$(curl -sS -f -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.v3+json" "https://api.github.com/user/orgs"); then
-    
-    # Loop through each organization login name
     for org in $(echo "$orgs" | jq -r '.[].login'); do
       echo "Fetching repositories for organization: $org..."
       append_repos "https://api.github.com/orgs/${org}/repos?type=all"
@@ -93,6 +102,5 @@ else
     echo "⚠️  Failed to fetch organizations."
 fi
 
-# Count the number of generated projects
 PROJECT_COUNT=$(grep -c "\[\[projects\]\]" "$OUTPUT_FILE" || true)
-echo "✅ Successfully generated $OUTPUT_FILE with $PROJECT_COUNT repositories!"
+echo "✅ Successfully generated $OUTPUT_FILE with $PROJECT_COUNT grouped projects!"
