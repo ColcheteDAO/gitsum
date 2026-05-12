@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- Configuration ---
 CONFIG_FILE="config.toml"
-TARGET_REMOTE="gitea" # Ensure this matches the name of your extra remote
 
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "ERROR: $CONFIG_FILE not found."
@@ -14,25 +12,19 @@ echo "📖 Reading $CONFIG_FILE natively..."
 
 # Create a temporary directory for cloning
 TEMP_DIR=$(mktemp -d)
-# Ensure the temp directory is deleted when the script exits or crashes
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-echo "🚀 Starting migration from GitHub to $TARGET_REMOTE..."
+echo "🚀 Starting universal migration..."
 
-# We will read the config line by line to keep track of the current project and remote
 CURRENT_PROJECT=""
 CURRENT_REMOTE=""
-
-# Project-specific variables
 GITHUB_URL=""
 GITHUB_KEY=""
-TARGET_URL=""
-TARGET_KEY=""
+EXTRA_TARGETS=""
 
-# Function to execute the migration once a project block is fully parsed
+# Execute migration for the parsed project
 execute_migration() {
-    # If we haven't collected both URLs yet, do nothing and return
-    if [[ -z "$GITHUB_URL" || -z "$TARGET_URL" || -z "$CURRENT_PROJECT" ]]; then
+    if [[ -z "$GITHUB_URL" || -z "$CURRENT_PROJECT" || -z "$EXTRA_TARGETS" ]]; then
         return
     fi
 
@@ -48,25 +40,27 @@ execute_migration() {
         return
     fi
 
-    # 2. Push an exact mirror to the Target Remote
-    echo "   ⬆️  Pushing mirror to $TARGET_REMOTE..."
+    # 2. Push to ALL extra remotes found in the config
     pushd "$REPO_DIR" > /dev/null || return
     
-    if GIT_SSH_COMMAND="ssh -i $TARGET_KEY -o StrictHostKeyChecking=no" git push --quiet --mirror "$TARGET_URL"; then
-        echo "   ✅ Successfully mirrored $CURRENT_PROJECT to $TARGET_REMOTE!"
-    else
-        echo "   ❌ Failed to push $CURRENT_PROJECT to $TARGET_REMOTE."
-        echo "      (Did you enable ENABLE_PUSH_CREATE=true in Gitea's app.ini?)"
-    fi
+    while IFS='|' read -r t_name t_url t_key; do
+        [[ -z "$t_name" ]] && continue
+        echo "   ⬆️  Pushing mirror to $t_name ($t_url)..."
+        
+        if GIT_SSH_COMMAND="ssh -i $t_key -o StrictHostKeyChecking=no" git push --quiet --mirror "$t_url"; then
+            echo "   ✅ Successfully mirrored to $t_name!"
+        else
+            echo "   ❌ Failed to push to $t_name."
+        fi
+    done <<< "$EXTRA_TARGETS"
     
     popd > /dev/null || return
 }
 
 # --- TOML Parser Loop ---
-# This loop reads the config.toml file line by line to extract the needed strings.
 while IFS= read -r line || [[ -n "$line" ]]; do
-    # Remove leading/trailing whitespace
-    line=$(echo "$line" | xargs)
+    # SAFE WHITESPACE TRIM: Uses sed instead of xargs to preserve quotation marks
+    line=$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
     # Ignore comments and empty lines
     if [[ -z "$line" || "$line" == \#* ]]; then
@@ -75,40 +69,39 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 
     # Detect a new project block
     if [[ "$line" == "[[projects]]" ]]; then
-        # If we were tracking a previous project, migrate it before resetting
-        if [[ -n "$CURRENT_PROJECT" && -n "$TARGET_URL" ]]; then
+        if [[ -n "$CURRENT_PROJECT" ]]; then
             execute_migration
         fi
         # Reset variables for the new project
         CURRENT_PROJECT=""
         GITHUB_URL=""
         GITHUB_KEY=""
-        TARGET_URL=""
-        TARGET_KEY=""
+        EXTRA_TARGETS=""
         CURRENT_REMOTE=""
         continue
     fi
 
     # Capture the project name
     if [[ "$line" == name\ =* && -z "$CURRENT_REMOTE" ]]; then
-        # Extract the value between the quotes
         CURRENT_PROJECT=$(echo "$line" | sed -n 's/.*"\(.*\)".*/\1/p')
         continue
     fi
 
-    # Detect a new remote block inside the project
+    # Detect a new remote block
     if [[ "$line" == "[[projects.remotes]]" ]]; then
         CURRENT_REMOTE="pending"
+        T_URL=""
+        T_KEY=""
         continue
     fi
 
-    # Capture which remote we are currently parsing
+    # Capture remote name
     if [[ "$line" == name\ =* && "$CURRENT_REMOTE" == "pending" ]]; then
         CURRENT_REMOTE=$(echo "$line" | sed -n 's/.*"\(.*\)".*/\1/p')
         continue
     fi
 
-    # Capture GitHub details
+    # Capture GitHub details (Source)
     if [[ "$CURRENT_REMOTE" == "github" ]]; then
         if [[ "$line" == url\ =* ]]; then
             GITHUB_URL=$(echo "$line" | sed -n 's/.*"\(.*\)".*/\1/p')
@@ -118,12 +111,19 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         continue
     fi
 
-    # Capture Target Remote details
-    if [[ "$CURRENT_REMOTE" == "$TARGET_REMOTE" ]]; then
+    # Capture Any Other Remote details (Targets)
+    if [[ -n "$CURRENT_REMOTE" && "$CURRENT_REMOTE" != "github" && "$CURRENT_REMOTE" != "pending" ]]; then
         if [[ "$line" == url\ =* ]]; then
-            TARGET_URL=$(echo "$line" | sed -n 's/.*"\(.*\)".*/\1/p')
+            T_URL=$(echo "$line" | sed -n 's/.*"\(.*\)".*/\1/p')
         elif [[ "$line" == ssh_key\ =* ]]; then
-            TARGET_KEY=$(echo "$line" | sed -n 's/.*"\(.*\)".*/\1/p')
+            T_KEY=$(echo "$line" | sed -n 's/.*"\(.*\)".*/\1/p')
+        fi
+        
+        # Once we have both URL and Key, save it to our targets list
+        if [[ -n "${T_URL:-}" && -n "${T_KEY:-}" ]]; then
+            EXTRA_TARGETS="${EXTRA_TARGETS}${CURRENT_REMOTE}|${T_URL}|${T_KEY}"$'\n'
+            T_URL=""
+            T_KEY=""
         fi
         continue
     fi
@@ -131,7 +131,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done < "$CONFIG_FILE"
 
 # Make sure to migrate the very last project in the file
-if [[ -n "$CURRENT_PROJECT" && -n "$TARGET_URL" ]]; then
+if [[ -n "$CURRENT_PROJECT" ]]; then
     execute_migration
 fi
 
